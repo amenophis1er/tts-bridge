@@ -21,12 +21,12 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Self {
-        let chunk_size = env::var("TTS_CHUNK_SIZE")
+        let chunk_size: usize = env::var("TTS_CHUNK_SIZE")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(4800);
 
-        if chunk_size == 0 || chunk_size % 2 != 0 {
+        if chunk_size == 0 || !chunk_size.is_multiple_of(2) {
             eprintln!(
                 "FATAL: TTS_CHUNK_SIZE must be a positive even number (PCM16 = 2 bytes/sample), got {chunk_size}"
             );
