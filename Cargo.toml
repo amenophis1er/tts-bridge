@@ -1,0 +1,21 @@
+[package]
+name = "tts-bridge"
+version = "0.1.0"
+edition = "2024"
+description = "WebSocket-to-HTTP streaming proxy for OpenAI-compatible TTS APIs"
+license = "MIT"
+repository = "https://github.com/Amenophis1er/tts-bridge"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+reqwest = { version = "0.12", features = ["stream", "json"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "json", "env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+futures-util = "0.3"
+
+[dev-dependencies]
+tokio-tungstenite = "0.26"
