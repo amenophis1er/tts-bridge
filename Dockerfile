@@ -6,7 +6,7 @@ COPY Cargo.toml Cargo.lock ./
 # Dependency caching layer: build deps with dummy src, then replace
 RUN mkdir src && echo 'fn main(){}' > src/main.rs && touch src/lib.rs && cargo build --release && rm -rf src
 COPY src/ src/
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs src/lib.rs && cargo build --release
 
 # Stage 2: Runtime
 FROM gcr.io/distroless/static-debian12

@@ -8,7 +8,7 @@ repository = "https://github.com/Amenophis1er/tts-bridge"
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
-reqwest = { version = "0.12", features = ["stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "json", "env-filter"] }
