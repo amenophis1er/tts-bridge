@@ -1,13 +1,15 @@
 # tts-bridge
 
-WebSocket streaming proxy for any OpenAI-compatible TTS API.
+OpenAI-compatible TTS APIs use HTTP request/response — one call per utterance, no persistent connection, no way to cancel mid-stream. Real-time voice apps need the opposite: a WebSocket that stays open, streams audio as it's generated, supports barge-in cancellation, and queues back-to-back utterances seamlessly.
+
+tts-bridge bridges that gap. It's a single binary that sits between your voice app and any OpenAI-compatible TTS backend, translating WebSocket into streaming HTTP.
 
 ```
 Voice App ──WS──► tts-bridge ──HTTP (streaming)──► TTS Backend
                   (this project)                    (Speaches, OpenAI, etc.)
 ```
 
-Send text over WebSocket, receive PCM16 audio chunks in real-time. Persistent connection with multiple utterances, mid-stream cancellation, queued messages during playback, and sticky session parameters. Zero inference, zero GPU — just protocol translation.
+**Persistent connections** — one WebSocket, unlimited utterances. **Real-time streaming** — PCM16 audio chunks forwarded as they arrive. **Barge-in** — cancel mid-utterance instantly. **Queued playback** — send text during playback, it plays next. **Sticky parameters** — voice/model/speed carry across utterances. **Zero GPU** — pure protocol translation.
 
 ## Quick Start
 
