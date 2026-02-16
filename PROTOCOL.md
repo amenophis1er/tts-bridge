@@ -19,7 +19,7 @@ Voice App ──WS──► tts-bridge ──HTTP (streaming)──► TTS Backe
                   (this project)                    (Speaches, OpenAI, etc.)
 ```
 
-Send text over WebSocket, receive PCM16 audio chunks in real-time. Persistent connection — multiple utterances on a single WebSocket. Zero inference, zero GPU — just protocol translation.
+Send text over WebSocket, receive PCM16 audio chunks in real-time. Persistent connection — multiple utterances on a single WebSocket. Text sent during an active utterance is queued and played next. Zero inference, zero GPU — just protocol translation.
 
 ## Protocol
 
@@ -92,18 +92,9 @@ No more audio frames are sent for that utterance. The connection stays open for 
 
 Clears all sticky parameters back to server defaults. Useful when switching voices or models mid-conversation.
 
-#### 6. Sequential utterances only
+#### 6. Queued utterances (sequential playback)
 
-One utterance streams at a time per WebSocket connection. If the client sends a new `text` message while an utterance is still in progress, the bridge responds with an error:
-
-```json
-{
-  "type": "error",
-  "message": "Utterance u_a1b2 is still in progress. Send {\"type\":\"cancel\"} first."
-}
-```
-
-The in-flight utterance continues unaffected. For concurrent streams, open multiple WebSocket connections.
+One utterance streams at a time per WebSocket connection. If the client sends a new `text` message while an utterance is still in progress, the bridge queues the message and processes it immediately after the current utterance completes. Use `{"type":"cancel"}` to interrupt the active utterance if you need the queued message to play sooner. For concurrent, truly parallel streams, open multiple WebSocket connections.
 
 #### 7. Error handling
 

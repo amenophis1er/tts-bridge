@@ -61,6 +61,18 @@ enum StreamResult {
     Fatal(String),
 }
 
+/// Messages queued during an active utterance stream.
+struct StreamOutput {
+    result: Result<StreamResult, String>,
+    /// Messages that arrived while the utterance was in progress.
+    queued: Vec<String>,
+}
+
+/// Maximum number of messages that can be queued during a single utterance.
+const MAX_QUEUED_MESSAGES: usize = 32;
+/// Maximum total bytes of queued messages before the connection is closed.
+const MAX_QUEUED_BYTES: usize = 256 * 1024; // 256 KB
+
 fn parse_client_message(text: &str) -> Result<ClientMessage, String> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("Invalid JSON: {e}"))?;
@@ -137,34 +149,41 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let mut session = SessionParams::new(&state.config);
     let session_id = uuid::Uuid::new_v4();
+    let mut pending_messages: std::collections::VecDeque<String> =
+        std::collections::VecDeque::new();
 
     info!(session_id = %session_id, "WebSocket connection established");
 
     loop {
-        let msg = match ws_receiver.next().await {
-            Some(Ok(Message::Text(text))) => text,
-            Some(Ok(Message::Binary(_))) => {
-                warn!(session_id = %session_id, "Client sent binary frame, closing with 1003");
-                let _ = ws_sender
-                    .send(Message::Close(Some(CloseFrame {
-                        code: 1003,
-                        reason: "Binary frames not supported".into(),
-                    })))
-                    .await;
-                break;
-            }
-            Some(Ok(Message::Close(_))) | None => {
-                info!(session_id = %session_id, "Client disconnected");
-                break;
-            }
-            Some(Ok(Message::Ping(data))) => {
-                let _ = ws_sender.send(Message::Pong(data)).await;
-                continue;
-            }
-            Some(Ok(Message::Pong(_))) => continue,
-            Some(Err(e)) => {
-                error!(session_id = %session_id, error = %e, "WebSocket error");
-                break;
+        // Drain queued messages (from mid-stream arrivals) before reading the socket
+        let msg = if let Some(queued) = pending_messages.pop_front() {
+            queued
+        } else {
+            match ws_receiver.next().await {
+                Some(Ok(Message::Text(text))) => text.to_string(),
+                Some(Ok(Message::Binary(_))) => {
+                    warn!(session_id = %session_id, "Client sent binary frame, closing with 1003");
+                    let _ = ws_sender
+                        .send(Message::Close(Some(CloseFrame {
+                            code: 1003,
+                            reason: "Binary frames not supported".into(),
+                        })))
+                        .await;
+                    break;
+                }
+                Some(Ok(Message::Close(_))) | None => {
+                    info!(session_id = %session_id, "Client disconnected");
+                    break;
+                }
+                Some(Ok(Message::Ping(data))) => {
+                    let _ = ws_sender.send(Message::Pong(data)).await;
+                    continue;
+                }
+                Some(Ok(Message::Pong(_))) => continue,
+                Some(Err(e)) => {
+                    error!(session_id = %session_id, error = %e, "WebSocket error");
+                    break;
+                }
             }
         };
 
@@ -218,8 +237,9 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
                     "Starting utterance"
                 );
 
-                // Stream audio (start frame is sent inside after backend responds)
-                match stream_utterance(
+                // Stream audio (start frame is sent inside after backend responds).
+                // Messages arriving mid-stream are queued and replayed after.
+                let output = stream_utterance(
                     &mut ws_sender,
                     &mut ws_receiver,
                     &state,
@@ -227,8 +247,11 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
                     &text,
                     &uid,
                 )
-                .await
-                {
+                .await;
+
+                // Re-inject queued messages so they're processed in the next loop iterations
+                let mut should_break = false;
+                match output.result {
                     Ok(StreamResult::Done) => {
                         let done_frame = json!({
                             "type": "done",
@@ -239,15 +262,25 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
                             .await
                             .is_err()
                         {
-                            break;
+                            should_break = true;
                         }
                         info!(
                             session_id = %session_id,
                             utterance_id = %uid,
+                            queued = output.queued.len(),
                             "Utterance complete"
                         );
                     }
                     Ok(StreamResult::Cancelled) => {
+                        // Cancel discards queued utterances (barge-in)
+                        if !output.queued.is_empty() {
+                            debug!(
+                                session_id = %session_id,
+                                utterance_id = %uid,
+                                dropped = output.queued.len(),
+                                "Dropping queued utterances due to cancel"
+                            );
+                        }
                         let cancelled_frame = json!({
                             "type": "cancelled",
                             "utterance_id": uid,
@@ -260,10 +293,12 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
                             utterance_id = %uid,
                             "Utterance cancelled"
                         );
+                        // Don't replay queued — skip to the next loop iteration
+                        continue;
                     }
                     Ok(StreamResult::ClientDisconnected) => {
                         info!(session_id = %session_id, "Client disconnected during stream");
-                        break;
+                        should_break = true;
                     }
                     Ok(StreamResult::Fatal(e)) => {
                         let error_frame = json!({
@@ -277,7 +312,7 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
                         let _ = ws_sender
                             .send(Message::Close(Some(CloseFrame {
                                 code: 1011, // Internal Error
-                                reason: "Buffer limit exceeded".into(),
+                                reason: "Internal error".into(),
                             })))
                             .await;
                         error!(
@@ -286,7 +321,7 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
                             error = %e,
                             "Fatal stream error, closing connection"
                         );
-                        break;
+                        should_break = true;
                     }
                     Err(e) => {
                         let error_frame = json!({
@@ -304,6 +339,15 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
                             "Utterance failed"
                         );
                     }
+                }
+
+                if should_break {
+                    break;
+                }
+
+                // Replay queued messages that arrived during streaming
+                for queued_msg in output.queued {
+                    pending_messages.push_back(queued_msg);
                 }
             }
             ClientMessage::Cancel => {
@@ -326,7 +370,10 @@ async fn stream_utterance(
     params: &SessionParams,
     text: &str,
     utterance_id: &str,
-) -> Result<StreamResult, String> {
+) -> StreamOutput {
+    let mut queued: Vec<String> = Vec::new();
+    let mut queued_bytes: usize = 0;
+    let result = async {
     let url = format!("{}/v1/audio/speech", state.config.backend_url);
 
     // Build request body: extras first, then known fields override to prevent
@@ -411,25 +458,26 @@ async fn stream_utterance(
             ws_msg = ws_receiver.next() => {
                 match ws_msg {
                     Some(Ok(Message::Text(incoming))) => {
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&incoming) {
-                            if parsed.get("type").and_then(|v| v.as_str()) == Some("cancel") {
-                                debug!(utterance_id = %utterance_id, "Cancel received, aborting stream");
-                                // Drop stream by returning — this aborts the HTTP request
-                                return Ok(StreamResult::Cancelled);
-                            }
-                            if parsed.get("text").is_some() {
-                                let err_msg = format!(
-                                    "Utterance {utterance_id} is still in progress. Send {{\"type\":\"cancel\"}} first."
-                                );
-                                let error_frame = json!({
-                                    "type": "error",
-                                    "message": err_msg,
-                                });
-                                let _ = ws_sender
-                                    .send(Message::Text(error_frame.to_string().into()))
-                                    .await;
-                            }
+                        // Cancel is the only message handled immediately mid-stream
+                        let is_cancel = serde_json::from_str::<serde_json::Value>(&incoming)
+                            .ok()
+                            .and_then(|v| v.get("type")?.as_str().map(|s| s == "cancel"))
+                            .unwrap_or(false);
+
+                        if is_cancel {
+                            debug!(utterance_id = %utterance_id, "Cancel received, aborting stream");
+                            return Ok(StreamResult::Cancelled);
                         }
+
+                        // Queue everything else for replay after the current utterance
+                        let msg_bytes = incoming.len();
+                        if queued.len() >= MAX_QUEUED_MESSAGES || queued_bytes + msg_bytes > MAX_QUEUED_BYTES {
+                            warn!(utterance_id = %utterance_id, count = queued.len(), bytes = queued_bytes, "Queue limit reached, closing connection");
+                            return Ok(StreamResult::Fatal("Queue limit exceeded".into()));
+                        }
+                        debug!(utterance_id = %utterance_id, queued = queued.len() + 1, "Queuing message received during active utterance");
+                        queued_bytes += msg_bytes;
+                        queued.push(incoming.to_string());
                     }
                     Some(Ok(Message::Binary(_))) => {
                         let _ = ws_sender
@@ -495,6 +543,8 @@ async fn stream_utterance(
             }
         }
     }
+    }.await;
+    StreamOutput { result, queued }
 }
 
 async fn send_error(

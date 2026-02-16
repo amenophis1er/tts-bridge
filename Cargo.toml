@@ -1,6 +1,6 @@
 [package]
 name = "tts-bridge"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 description = "WebSocket-to-HTTP streaming proxy for OpenAI-compatible TTS APIs"
 license = "MIT"

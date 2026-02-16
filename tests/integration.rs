@@ -454,7 +454,7 @@ async fn test_binary_frame_from_client() {
 }
 
 #[tokio::test]
-async fn test_concurrent_utterance_rejected() {
+async fn test_concurrent_utterance_queued() {
     let (backend_addr, _bh) = start_slow_backend().await;
     let (bridge_addr, _sh) = start_bridge_with_config(backend_addr, 100).await;
     let (mut writer, mut reader) = ws_connect(bridge_addr).await;
@@ -469,14 +469,14 @@ async fn test_concurrent_utterance_rejected() {
         .await
         .unwrap();
 
-    // Wait for start
+    // Wait for start of first utterance
     let start = recv_text(&mut reader).await;
     assert_eq!(start["type"], "start");
 
     // Read at least one audio chunk to ensure streaming is active
     recv_binary(&mut reader).await;
 
-    // Try to send another utterance
+    // Send another utterance while first is in progress — should be queued
     writer
         .send(Message::Text(
             serde_json::json!({"text": "Second text"})
@@ -486,16 +486,33 @@ async fn test_concurrent_utterance_rejected() {
         .await
         .unwrap();
 
-    // Should get an error about utterance in progress
-    // Drain binary chunks until we get a text message
+    // Drain first utterance: binary chunks then "done"
     loop {
         let msg = recv_msg(&mut reader).await;
         match msg {
             Message::Binary(_) => continue,
             Message::Text(t) => {
                 let v: serde_json::Value = serde_json::from_str(&t).unwrap();
-                if v["type"] == "error" {
-                    assert!(v["message"].as_str().unwrap().contains("still in progress"));
+                if v["type"] == "done" {
+                    break;
+                }
+            }
+            other => panic!("Unexpected message: {other:?}"),
+        }
+    }
+
+    // Second utterance should start automatically from the queue
+    let start2 = recv_text(&mut reader).await;
+    assert_eq!(start2["type"], "start");
+
+    // Drain second utterance
+    loop {
+        let msg = recv_msg(&mut reader).await;
+        match msg {
+            Message::Binary(_) => continue,
+            Message::Text(t) => {
+                let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                if v["type"] == "done" {
                     break;
                 }
             }

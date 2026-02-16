@@ -7,7 +7,7 @@ Voice App ──WS──► tts-bridge ──HTTP (streaming)──► TTS Backe
                   (this project)                    (Speaches, OpenAI, etc.)
 ```
 
-Send text over WebSocket, receive PCM16 audio chunks in real-time. Persistent connection with multiple utterances, mid-stream cancellation, and sticky session parameters. Zero inference, zero GPU — just protocol translation.
+Send text over WebSocket, receive PCM16 audio chunks in real-time. Persistent connection with multiple utterances, mid-stream cancellation, queued messages during playback, and sticky session parameters. Zero inference, zero GPU — just protocol translation.
 
 ## Quick Start
 
@@ -35,7 +35,7 @@ docker run -d \
 3. Bridge sends `POST /v1/audio/speech` to the backend with streaming response
 4. Audio bytes are chunked into fixed-size PCM16 frames and forwarded as binary WebSocket frames
 5. Client receives `start` → binary audio chunks → `done` for each utterance
-6. Connection stays open for the next utterance
+6. Connection stays open for the next utterance; text sent while audio is streaming is queued and processed sequentially
 
 ### Cancellation (Barge-in)
 
@@ -44,6 +44,10 @@ Send `{"type":"cancel"}` during streaming to immediately abort the backend reque
 ### Sticky Parameters
 
 Voice, model, sample rate, language, and speed carry over between utterances on the same connection. Override any of them per-message, or send `{"type":"reset"}` to return to defaults.
+
+### Queued Messages During Streaming
+
+If the client sends a new `text` message while an utterance is actively streaming, the bridge queues the message and processes it immediately after the current utterance finishes. Use `{"type":"cancel"}` to interrupt the current utterance if you want the queued message to play sooner.
 
 ## Configuration
 
